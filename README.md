@@ -27,7 +27,7 @@ Oracle's Always Free ARM (A1.Flex) capacity is frequently exhausted (`Out of hos
 
 ### Quick start
 ```bash
-cp .env.example .env       # fill in COMPARTMENT_ID / SUBNET_ID / IMAGE_ID(_AMD)
+cp .env.example .env       # fill in COMPARTMENT_ID / SUBNET_ID  (image OCID auto-resolved)
 mkdir -p oci keys data
 # put your OCI API config+key in ./oci  (oci/config + oci_api_key.pem)
 # put the SSH public key to inject into instances in ./keys/id_rsa.pub
@@ -40,8 +40,9 @@ docker compose up -d --build
 |-----|---------|
 | `COMPARTMENT_ID` | Tenancy/Compartment OCID |
 | `SUBNET_ID` | Subnet OCID |
-| `IMAGE_ID` | ARM (aarch64) image OCID |
-| `IMAGE_ID_AMD` | AMD (x86) image OCID, for E2.1.Micro |
+| `IMAGE_ID` | ARM (aarch64) image OCID — **leave empty to auto-resolve** the latest official image for your region |
+| `IMAGE_ID_AMD` | AMD (x86) image OCID for E2.1.Micro — **leave empty to auto-resolve** |
+| `IMAGE_OS` / `IMAGE_OS_VERSION` | optional — OS used for auto-resolve (default `Canonical Ubuntu`, latest) |
 | `SSH_KEY_FILE` | in-container path to the public key (default `/keys/id_rsa.pub`) |
 | `PUSHPLUS_TOKEN` | optional — PushPlus token for WeChat push (https://www.pushplus.plus, no proxy needed in China) |
 | `PUSHPLUS_TOPIC` | optional — PushPlus group code for one-to-many push |
@@ -82,7 +83,7 @@ docker compose up -d --build
 
 ### 快速开始
 ```bash
-cp .env.example .env       # 填 COMPARTMENT_ID / SUBNET_ID / IMAGE_ID(_AMD)
+cp .env.example .env       # 填 COMPARTMENT_ID / SUBNET_ID(镜像 OCID 自动获取)
 mkdir -p oci keys data
 # 把 OCI API 配置和私钥放到 ./oci(oci/config + oci_api_key.pem)
 # 把要注入实例的 SSH 公钥放到 ./keys/id_rsa.pub

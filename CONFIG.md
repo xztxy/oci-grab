@@ -58,13 +58,17 @@ mkdir -p oci keys data
 |---|---|---|
 | `COMPARTMENT_ID` | 区间 OCID | 最简单 = 直接用第1步 `config` 里的 `tenancy=ocid1.tenancy...`(根区间)。<br>或:导航菜单 →「**身份与安全**」(Identity & Security)→「**区间**」(Compartments)→ 点区间名 → 复制 **OCID**。 |
 | `SUBNET_ID` | 子网 OCID(**必须公有子网**) | 导航菜单 →「**网络**」(Networking)→「**虚拟云网络**」(VCN)→ 选你的 VCN →左侧「**子网**」(Subnets)→ 点子网 → 复制 **OCID**。<br>没有 VCN 就先用控制台「**启动 VCN 向导**」一键建带公有子网的 VCN。 |
-| `IMAGE_ID` | **ARM(aarch64)** 系统镜像 OCID | 见下「3. 如何取镜像 OCID」,选 **Ampere / aarch64** 的镜像。 |
-| `IMAGE_ID_AMD` | **AMD(x86_64)** 系统镜像 OCID(给 E2.1.Micro) | 同上,选 **x86_64 / Intel·AMD** 的镜像。 |
+| `IMAGE_ID` | **ARM(aarch64)** 系统镜像 OCID | **留空即可** —— 程序会自动获取当前区域最新官方镜像(aarch64)。只想锁定固定镜像时才填,取法见「3.」。 |
+| `IMAGE_ID_AMD` | **AMD(x86_64)** 系统镜像 OCID(给 E2.1.Micro) | **留空即可** —— 自动获取(x86_64)。同上。 |
+| `IMAGE_OS` / `IMAGE_OS_VERSION` | 自动获取时的系统/版本(可选) | 默认 `Canonical Ubuntu` 最新;想用别的(如 Oracle Linux 或固定 `22.04`)才填。 |
 | `SSH_KEY_FILE` | 容器内公钥路径 | 默认 `/keys/id_rsa.pub`,对应你放到 `./keys/id_rsa.pub` 的公钥(见 第4步),一般不用改。 |
 
 ---
 
-## 3. 如何取镜像 OCID(`IMAGE_ID` / `IMAGE_ID_AMD`)
+## 3. (可选)手动锁定镜像 OCID(`IMAGE_ID` / `IMAGE_ID_AMD`)
+
+> **默认无需做这步** —— 留空时程序会自动按「当前区域 + 形状架构」取最新官方镜像。
+> 仅当你想固定某个特定镜像(版本/发行版)时,才按下面取 OCID 填入。
 
 镜像按 **区域 + 架构** 区分,务必和你的区域、形状架构匹配。
 

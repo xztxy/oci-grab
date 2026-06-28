@@ -54,8 +54,11 @@ PRESETS = [
 
 COMPARTMENT_ID = os.environ.get("COMPARTMENT_ID", "")
 SUBNET_ID = os.environ.get("SUBNET_ID", "")
-IMAGE_ID = os.environ.get("IMAGE_ID", "")            # ARM aarch64
-IMAGE_ID_AMD = os.environ.get("IMAGE_ID_AMD", "")    # AMD x86
+IMAGE_ID = os.environ.get("IMAGE_ID", "").strip()            # ARM aarch64;留空=自动获取
+IMAGE_ID_AMD = os.environ.get("IMAGE_ID_AMD", "").strip()    # AMD x86;留空=自动获取
+# 镜像自动获取(IMAGE_ID/IMAGE_ID_AMD 留空时):按区域+形状架构取最新官方镜像
+IMAGE_OS = (os.environ.get("IMAGE_OS", "").strip() or "Canonical Ubuntu")
+IMAGE_OS_VERSION = os.environ.get("IMAGE_OS_VERSION", "").strip()   # 可选,如 22.04
 SSH_KEY_FILE = os.environ.get("SSH_KEY_FILE", "/keys/id_rsa.pub")
 OCI_CONFIG = "/root/.oci/config"
 STATE_FILE = "/data/job.json"   # 任务持久化(挂载的可写卷),容器重启后自动恢复
@@ -134,6 +137,7 @@ class GrabManager:
         self.deadline: Optional[float] = None   # None = 一直跑到抢满
         self.ads: List[str] = []
         self.region = ""
+        self.images: Dict[str, str] = {}   # shape_key -> 解析出的镜像 OCID(缓存)
 
     # ---------- 日志 ----------
     def log(self, msg: str):
@@ -213,6 +217,39 @@ class GrabManager:
         except Exception as e:
             self.log(f"获取可用域失败: {e}")
             return []
+
+    # ---------- 镜像自动解析(留空时按区域+架构取最新官方镜像) ----------
+    def _resolve_image(self, shape_key: str) -> str:
+        if self.images.get(shape_key):
+            return self.images[shape_key]
+        # 1) .env 显式指定优先(非空且非 "auto")
+        env_override = IMAGE_ID if shape_key == "arm" else IMAGE_ID_AMD
+        if env_override and env_override.lower() != "auto":
+            self.images[shape_key] = env_override
+            return env_override
+        # 2) 自动:按形状(决定架构)查最新官方镜像
+        sp = SHAPES[shape_key]
+        args = ["oci", "compute", "image", "list",
+                "--compartment-id", COMPARTMENT_ID,
+                "--shape", sp["shape"],
+                "--operating-system", IMAGE_OS,
+                "--sort-by", "TIMECREATED", "--sort-order", "DESC",
+                "--output", "json"]
+        if IMAGE_OS_VERSION:
+            args += ["--operating-system-version", IMAGE_OS_VERSION]
+        try:
+            out = subprocess.run(args, capture_output=True, text=True,
+                                 timeout=60, stdin=subprocess.DEVNULL)
+            data = (json.loads(out.stdout or "{}") or {}).get("data", []) or []
+            if data:
+                img = data[0]
+                self.images[shape_key] = img.get("id", "")
+                self.log(f"  🧩 自动选用镜像[{sp['label']}]: {img.get('display-name')}")
+                return self.images[shape_key]
+            self.log(f"  ⚠️ 未找到 {IMAGE_OS} 适配 {sp['shape']} 的镜像")
+        except Exception as e:
+            self.log(f"  自动获取镜像失败[{shape_key}]: {e}")
+        return ""
 
     # ---------- 已存在(未终止)实例名 ----------
     def existing_names(self) -> List[str]:
@@ -297,6 +334,15 @@ class GrabManager:
                 self.log(f"运行时长上限: {int((self.deadline - time.time())/60)} 分钟")
             else:
                 self.log("运行时长: 一直跑到抢满")
+
+            # 预解析镜像:IMAGE_ID/IMAGE_ID_AMD 留空时按区域+架构自动取最新官方镜像
+            for sk in {p["shape"] for p in self.plan}:
+                if not self._resolve_image(sk):
+                    self.state = "error"
+                    self.log(f"❌ 无法确定 {SHAPES[sk]['label']} 镜像。可在 .env 手动指定 IMAGE_ID/IMAGE_ID_AMD,或检查 IMAGE_OS/凭证。")
+                    self.notify("❌ OCI 抢占出错", f"无法自动获取 {SHAPES[sk]['label']} 镜像")
+                    self._clear_job()
+                    return
 
             self.notify("🚀 OCI 抢占启动",
                         f"区域 {self.region}\n目标 {len(self.plan)} 台: " +
@@ -395,7 +441,9 @@ class GrabManager:
     def _launch(self, p: Dict, ad: str):
         shape = p.get("shape", "arm")
         sp = SHAPES[shape]
-        image = IMAGE_ID if shape == "arm" else IMAGE_ID_AMD
+        image = self._resolve_image(shape)
+        if not image:
+            return 1, f"无可用镜像({sp['label']});请检查 IMAGE_OS 或在 .env 指定 IMAGE_ID"
         cmd = [
             "oci", "compute", "instance", "launch",
             "--availability-domain", ad,
@@ -560,8 +608,9 @@ def get_presets():
                        "fixed_ocpus": v["fixed_ocpus"], "fixed_mem": v["fixed_mem"]}
                    for k, v in SHAPES.items()},
         "region": MANAGER.detect_region(),
-        "configured": all([COMPARTMENT_ID, SUBNET_ID, IMAGE_ID]),
-        "amd_ready": bool(IMAGE_ID_AMD),
+        "configured": all([COMPARTMENT_ID, SUBNET_ID]),
+        "amd_ready": True,
+        "image_auto": not (IMAGE_ID and IMAGE_ID_AMD),
         "notify": {
             "enabled": notify_enabled(),
             "pushplus": bool(PUSHPLUS_TOKEN),

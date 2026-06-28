@@ -62,18 +62,17 @@ mkdir -p oci keys data
 ssh-keygen -t rsa -b 4096 -f keys/id_rsa -N ""
 ```
 
-### 4. 向用户索取四个 OCID 并写入 `.env`(每项附 CONFIG.md 位置)
+### 4. 向用户索取**两个** OCID 并写入 `.env`(每项附 CONFIG.md 位置)
 - `COMPARTMENT_ID`(=tenancy 或子区间 OCID)
 - `SUBNET_ID`(**公有**子网 OCID)
-- `IMAGE_ID`(ARM/aarch64 镜像 OCID)
-- `IMAGE_ID_AMD`(AMD/x86_64 镜像 OCID)
+
+> **镜像无需索取**:`IMAGE_ID` / `IMAGE_ID_AMD` 留空即可,程序运行时会按区域+架构自动获取最新官方镜像。除非用户明确要锁定某镜像,否则保持留空。
 
 写入示例(逐项替换,**禁止保留 xxxx 占位**):
 ```bash
 sed -i "s|^COMPARTMENT_ID=.*|COMPARTMENT_ID=<值>|" .env
 sed -i "s|^SUBNET_ID=.*|SUBNET_ID=<值>|" .env
-sed -i "s|^IMAGE_ID=.*|IMAGE_ID=<值>|" .env
-sed -i "s|^IMAGE_ID_AMD=.*|IMAGE_ID_AMD=<值>|" .env
+# IMAGE_ID / IMAGE_ID_AMD 保持留空(自动获取)
 ```
 
 ### 5.(可选)通知:向用户索取 token 后写入 `.env`
@@ -103,7 +102,7 @@ curl -s -X POST http://127.0.0.1:8090/api/notify-test
 - [ ] `oci/config` 存在,`key_file=/root/.oci/oci_api_key.pem`
 - [ ] `oci/oci_api_key.pem` 存在且权限 600
 - [ ] `keys/id_rsa.pub` 存在
-- [ ] `.env` 四个 OCID 已填、**无 `xxxx` 占位**
+- [ ] `.env` 的 `COMPARTMENT_ID` / `SUBNET_ID` 已填、**无 `xxxx` 占位**(`IMAGE_ID` 留空=自动获取)
 - [ ] `/api/presets` 返回 `configured: true`,`region` 与你的区域一致
 - [ ] `docker compose ps` 显示容器 Up
 - [ ] 未提交任何密钥;面板仅绑定 127.0.0.1
