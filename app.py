@@ -9,6 +9,8 @@ import json
 import time
 import threading
 import subprocess
+import urllib.request
+import urllib.parse
 from datetime import datetime
 from collections import deque
 from typing import List, Dict, Optional
@@ -58,6 +60,60 @@ SSH_KEY_FILE = os.environ.get("SSH_KEY_FILE", "/keys/id_rsa.pub")
 OCI_CONFIG = "/root/.oci/config"
 STATE_FILE = "/data/job.json"   # 任务持久化(挂载的可写卷),容器重启后自动恢复
 
+# ---------------- 通知配置(PushPlus 微信 + Telegram) ----------------
+PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN", "")
+PUSHPLUS_TOPIC = os.environ.get("PUSHPLUS_TOPIC", "")   # 可选:群组编码(一对多推送)
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
+TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "")
+# 可选:仅给 Telegram 用的代理(国内连 api.telegram.org 一般需要),如 http://192.168.15.1:7890
+NOTIFY_PROXY = os.environ.get("NOTIFY_PROXY", "")
+
+
+def notify_enabled() -> bool:
+    return bool(PUSHPLUS_TOKEN or (TG_BOT_TOKEN and TG_CHAT_ID))
+
+
+def send_notification(title: str, content: str = ""):
+    """同步发送到已配置的渠道,返回 [(渠道, 是否成功, 备注)]。best-effort,不抛异常。"""
+    content = content or title
+    results = []
+
+    # --- PushPlus(微信)---  国内直连,显式不走代理
+    if PUSHPLUS_TOKEN:
+        try:
+            payload = {"token": PUSHPLUS_TOKEN, "title": title,
+                       "content": content, "template": "txt"}
+            if PUSHPLUS_TOPIC:
+                payload["topic"] = PUSHPLUS_TOPIC
+            data = json.dumps(payload).encode("utf-8")
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            req = urllib.request.Request(
+                "https://www.pushplus.plus/send", data=data,
+                headers={"Content-Type": "application/json"})
+            with opener.open(req, timeout=10) as resp:
+                body = resp.read().decode("utf-8", "ignore")
+            ok = '"code":200' in body.replace(" ", "")
+            results.append(("PushPlus", ok, "" if ok else body[:160]))
+        except Exception as e:
+            results.append(("PushPlus", False, str(e)[:160]))
+
+    # --- Telegram ---  国内多半要走代理(NOTIFY_PROXY)
+    if TG_BOT_TOKEN and TG_CHAT_ID:
+        try:
+            data = urllib.parse.urlencode(
+                {"chat_id": TG_CHAT_ID, "text": f"{title}\n{content}"}).encode("utf-8")
+            proxies = {"http": NOTIFY_PROXY, "https": NOTIFY_PROXY} if NOTIFY_PROXY else {}
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
+            req = urllib.request.Request(
+                f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage", data=data)
+            with opener.open(req, timeout=15) as resp:
+                resp.read()
+            results.append(("Telegram", True, ""))
+        except Exception as e:
+            results.append(("Telegram", False, str(e)[:160]))
+
+    return results
+
 app = FastAPI(title="OCI Free ARM Grabber")
 
 
@@ -84,6 +140,17 @@ class GrabManager:
         line = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
         self.logs.append(line)
         print(line, flush=True)
+
+    # ---------- 通知(后台线程发送,不阻塞抢占循环) ----------
+    def notify(self, title: str, content: str = ""):
+        if not notify_enabled():
+            return
+
+        def _worker():
+            for ch, ok, info in send_notification(title, content):
+                self.log(f"📨 通知 {ch}: {'已发送' if ok else '失败 ' + info}")
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     # ---------- 任务持久化(容器重启后自动恢复) ----------
     def _save_job(self):
@@ -220,6 +287,7 @@ class GrabManager:
             if not self.ads:
                 self.state = "error"
                 self.log("❌ 无法获取可用域,请检查凭证配置。")
+                self.notify("❌ OCI 抢占出错", "无法获取可用域,请检查凭证配置。")
                 self._clear_job()
                 return
             self.log(f"区域 {self.region} | 可用域 {', '.join(self.ads)}")
@@ -229,6 +297,10 @@ class GrabManager:
                 self.log(f"运行时长上限: {int((self.deadline - time.time())/60)} 分钟")
             else:
                 self.log("运行时长: 一直跑到抢满")
+
+            self.notify("🚀 OCI 抢占启动",
+                        f"区域 {self.region}\n目标 {len(self.plan)} 台: " +
+                        ", ".join(f"{p['name']}({p['ocpus']}核/{p['memory_gb']}GB)" for p in self.plan))
 
             rnd = 0
             while not self.stop_flag.is_set():
@@ -243,6 +315,9 @@ class GrabManager:
                 if not todo:
                     self.state = "done"
                     self.log(f"🎉 已抢满 {len(self.plan)} 台,全部完成!")
+                    self.notify("🎉 OCI 全部抢满",
+                                f"已抢满 {len(self.plan)} 台: " +
+                                ", ".join(p["name"] for p in self.plan))
                     self._clear_job()
                     return
 
@@ -267,12 +342,17 @@ class GrabManager:
                                 pass
                             self.created.append({"name": p["name"], "id": iid, "ad": ad})
                             self.log(f"  ✅ [{p['name']}] 抢占成功!{ad}")
+                            self.notify(f"✅ 抢占成功 {p['name']}",
+                                        f"{p['ocpus']}核/{p['memory_gb']}GB @ {ad}\n"
+                                        f"区域 {self.region}")
                             break
                         if "Out of host capacity" in out:
                             self.log(f"  → [{p['name']}] {ad} 容量不足")
                         elif "LimitExceeded" in out or "QuotaExceeded" in out:
                             self.state = "error"
                             self.log("  → ⚠️ 已达配额上限,停止。")
+                            self.notify("⚠️ OCI 抢占停止",
+                                        "已达配额上限(LimitExceeded / QuotaExceeded),已停止。")
                             self._clear_job()
                             return
                         elif "TooManyRequests" in out or "429" in out:
@@ -298,6 +378,7 @@ class GrabManager:
         except Exception as e:
             self.state = "error"
             self.log(f"引擎异常: {e}")
+            self.notify("❌ OCI 抢占引擎异常", str(e)[:300])
             self._clear_job()
 
     def _expired(self) -> bool:
@@ -481,7 +562,25 @@ def get_presets():
         "region": MANAGER.detect_region(),
         "configured": all([COMPARTMENT_ID, SUBNET_ID, IMAGE_ID]),
         "amd_ready": bool(IMAGE_ID_AMD),
+        "notify": {
+            "enabled": notify_enabled(),
+            "pushplus": bool(PUSHPLUS_TOKEN),
+            "telegram": bool(TG_BOT_TOKEN and TG_CHAT_ID),
+        },
     }
+
+
+@app.post("/api/notify-test")
+def api_notify_test():
+    """发送一条测试通知,用于验证 PushPlus / Telegram 配置是否生效。"""
+    if not notify_enabled():
+        return JSONResponse(
+            {"ok": False, "error": "未配置任何通知渠道(需 PUSHPLUS_TOKEN,或 TG_BOT_TOKEN + TG_CHAT_ID)"},
+            status_code=400)
+    results = send_notification("🔔 OCI 抢占器测试通知",
+                                "收到这条消息说明通知配置成功 ✅")
+    return {"ok": all(ok for _, ok, _ in results) if results else False,
+            "results": [{"channel": c, "ok": o, "info": i} for c, o, i in results]}
 
 
 @app.post("/api/validate")
